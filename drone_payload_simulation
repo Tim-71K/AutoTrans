@@ -1,0 +1,151 @@
+
+import numpy as np
+import matplotlib.pyplot as plt
+import matplotlib.animation as animation
+import time
+import csv
+
+# Example placeholder classes and functions
+# You must define these based on your original project structure:
+# - simulate_3d_wind_field
+# - generate_figure_eight_trajectory
+# - self.nominal_mpc, self.robust_mpc, self.adaptive_nmpc
+# These should be properly defined before running this snippet.
+
+class DronePayloadSystem:
+    def __init__(self, duration, fs, Q=1.0, R=0.1, N=5):
+        self.t = np.linspace(0, duration, int(fs * duration))
+        self.dt = 1 / fs
+        self.mass = 1.0  # kg
+        self.Q = Q
+        self.R = R
+        self.N = N
+        self.energy = 0
+
+        # Initialize state arrays
+        n = len(self.t)
+        self.payload_x = np.zeros(n)
+        self.payload_y = np.zeros(n)
+        self.payload_z = np.zeros(n)
+        self.payload_vx = np.zeros(n)
+        self.payload_vy = np.zeros(n)
+        self.payload_vz = np.zeros(n)
+        self.payload_ax = np.zeros(n)
+        self.payload_ay = np.zeros(n)
+        self.payload_az = np.zeros(n)
+
+    def simulate(self, path_x, path_y, path_z, f_Q, f_L, mpc_type='adaptive'):
+        errors = []
+        costs = []
+        cable_stresses = []
+
+        for i in range(1, len(self.t)):
+            # Placeholder spring force for stress (you should define these properly)
+            spring_force_x = 0
+            spring_force_y = 0
+            spring_force_z = 0
+
+            if mpc_type == "nominal":
+                control = self.nominal_mpc(path_x[i], path_y[i], path_z[i], f_Q, f_L, i)
+            elif mpc_type == "robust":
+                control = self.robust_mpc(path_x[i], path_y[i], path_z[i], f_Q, f_L, i)
+            elif mpc_type == "adaptive":
+                control = self.adaptive_nmpc(path_x[i], path_y[i], path_z[i], f_Q, f_L, i)
+                error = np.linalg.norm([self.payload_x[i] - path_x[i],
+                                        self.payload_y[i] - path_y[i],
+                                        self.payload_z[i] - path_z[i]])
+                cost = self.Q * error ** 2 + self.R * control ** 2
+                costs.append(cost)
+            else:
+                print(f"[Warning] Unknown mpc_type '{mpc_type}', defaulting control to 0.")
+                control = 0
+
+            # Apply control to accelerations
+            self.payload_ax[i] += control / self.mass
+            self.payload_ay[i] += control / self.mass
+            self.payload_az[i] += control / self.mass
+
+            # Integrate to get velocity and position
+            self.payload_vx[i] = self.payload_vx[i - 1] + self.payload_ax[i] * self.dt
+            self.payload_vy[i] = self.payload_vy[i - 1] + self.payload_ay[i] * self.dt
+            self.payload_vz[i] = self.payload_vz[i - 1] + self.payload_az[i] * self.dt
+
+            self.payload_x[i] = self.payload_x[i - 1] + self.payload_vx[i] * self.dt
+            self.payload_y[i] = self.payload_y[i - 1] + self.payload_vy[i] * self.dt
+            self.payload_z[i] = self.payload_z[i - 1] + self.payload_vz[i] * self.dt
+
+            error = np.linalg.norm([self.payload_x[i] - path_x[i],
+                                    self.payload_y[i] - path_y[i],
+                                    self.payload_z[i] - path_z[i]])
+            errors.append(error)
+
+            cable_stress = np.sqrt(spring_force_x ** 2 + spring_force_y ** 2 + spring_force_z ** 2)
+            cable_stresses.append(cable_stress)
+
+            self.energy += abs(control) * self.dt
+
+        timestamp = time.strftime("%Y%m%d_%H%M%S")
+        try:
+            with open(f'simulation_log_{timestamp}.csv', 'w', newline='') as csvfile:
+                writer = csv.writer(csvfile)
+                writer.writerow(['Time', 'PositionX', 'PositionY', 'PositionZ', 'Error', 'CableStress', 'Energy', 'Cost'])
+                for i in range(1, len(self.t)):
+                    writer.writerow([self.t[i], self.payload_x[i], self.payload_y[i], self.payload_z[i],
+                                     errors[i - 1], cable_stresses[i - 1], self.energy,
+                                     costs[i - 1] if mpc_type == "adaptive" else 0])
+        except Exception as e:
+            print(f"[Error] Failed to write simulation log: {e}")
+
+        return errors, cable_stresses, costs
+
+    def nominal_mpc(self, *args): return 0.5  # Dummy
+    def robust_mpc(self, *args): return 0.7  # Dummy
+    def adaptive_nmpc(self, *args): return 1.0  # Dummy
+
+
+def animate_3d_trajectory(system, path_x, path_y, path_z):
+    fig = plt.figure()
+    ax = fig.add_subplot(111, projection='3d')
+    ax.set_xlim([min(path_x) - 5, max(path_x) + 5])
+    ax.set_ylim([min(path_y) - 5, max(path_y) + 5])
+    ax.set_zlim([min(path_z) - 5, max(path_z) + 5])
+    ax.set_xlabel('X')
+    ax.set_ylabel('Y')
+    ax.set_zlabel('Z')
+
+    ax.plot(path_x, path_y, path_z, label='Reference Path', color='green')
+    point_payload, = ax.plot([], [], [], 'o', label='Payload', color='red')
+    payload_traj, = ax.plot([], [], [], '--', linewidth=1, color='red', alpha=0.7)
+
+    def update(num):
+        point_payload.set_data(system.payload_x[num], system.payload_y[num])
+        point_payload.set_3d_properties(system.payload_z[num])
+        payload_traj.set_data(system.payload_x[:num], system.payload_y[:num])
+        payload_traj.set_3d_properties(system.payload_z[:num])
+        return point_payload, payload_traj
+
+    ani = animation.FuncAnimation(fig, update, frames=range(0, len(system.t), 2), interval=50, blit=True)
+    plt.legend()
+    plt.title("3D Payload Tracking")
+    plt.show()
+
+
+# --- MAIN EXECUTION ---
+if __name__ == "__main__":
+    duration = 60
+    fs = 50
+    radius = 15
+    # Replace with your real functions or simulation
+    t = np.linspace(0, duration, int(fs * duration))
+    path_x = radius * np.sin(0.1 * t)
+    path_y = radius * np.sin(0.1 * t) * np.cos(0.1 * t)
+    path_z = 10 + 5 * np.sin(0.05 * t)
+    f_Q, f_L = None, None  # Replace with real force inputs
+
+    system = DronePayloadSystem(duration, fs, Q=1.0, R=0.1, N=5)
+    errors, stresses, costs = system.simulate(path_x, path_y, path_z, f_Q, f_L, mpc_type='adaptive')
+
+    print(f"Total energy consumed: {system.energy:.3f} units")
+    if costs:
+        print(f"Average NMPC cost: {np.mean(costs):.3f}")
+    animate_3d_trajectory(system, path_x, path_y, path_z)
